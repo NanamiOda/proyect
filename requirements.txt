@@ -1,0 +1,26 @@
+# Dependencias para el Sistema Voz a Braille Multi-Arduino
+
+# Comunicación serial con Arduino
+pyserial==3.5
+
+# Reconocimiento de voz Vosk
+vosk==0.3.45
+
+# Captura de audio
+sounddevice==0.4.6
+
+# Procesamiento de PDFs
+PyPDF2==3.0.1
+pdf2image==1.16.3
+
+# OCR con Tesseract
+pytesseract==0.3.10
+Pillow==10.0.0
+
+# Procesamiento de audio adicional
+numpy==1.24.3
+
+# Aplicación web de debugging
+flask==3.0.0
+flask-socketio==5.3.5
+python-socketio==5.10.0
