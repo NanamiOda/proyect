@@ -23,18 +23,63 @@ class VoiceToBraille:
             sample_rate: Frecuencia de muestreo de audio (Hz)
         """
         self.modelo_path = modelo_path
-        self.sample_rate = sample_rate
+        self.sample_rate = self._get_valid_sample_rate(sample_rate)
         self.modelo = None
         self.recognizer = None
         self.audio_queue = queue.Queue()
         self.escuchando = False
+    
+    def _get_valid_sample_rate(self, desired_rate=16000):
+        """
+        Obtiene una tasa de muestreo válida para el dispositivo
+        
+        Args:
+            desired_rate: Tasa deseada (16000 Hz para Vosk)
+            
+        Returns:
+            Tasa de muestreo válida
+        """
+        try:
+            # Intentar obtener el dispositivo por defecto
+            device_info = sd.query_devices(kind='input')
+            default_rate = int(device_info['default_samplerate'])
+            
+            # Lista de tasas compatibles con Vosk en orden de preferencia
+            vosk_rates = [16000, 8000, 32000, 44100, 48000]
+            
+            # Si la tasa por defecto es compatible con Vosk, usarla
+            if default_rate in vosk_rates:
+                print(f"[INFO] Usando sample rate: {default_rate} Hz")
+                return default_rate
+            
+            # Probar tasas de muestreo compatibles con Vosk
+            for rate in vosk_rates:
+                try:
+                    sd.check_input_settings(
+                        device=None,
+                        channels=1,
+                        samplerate=rate
+                    )
+                    print(f"[INFO] Sample rate ajustado a: {rate} Hz (compatible con dispositivo)")
+                    return rate
+                except Exception:
+                    continue
+            
+            # Si ninguna funciona, usar la por defecto del dispositivo
+            print(f"[WARNING] Usando sample rate del dispositivo: {default_rate} Hz")
+            return default_rate
+            
+        except Exception as e:
+            print(f"[WARNING] No se pudo detectar sample rate automático: {e}")
+            print(f"[INFO] Usando sample rate por defecto: {desired_rate} Hz")
+            return desired_rate
         
     def cargar_modelo(self):
         """Carga el modelo Vosk"""
         print("Cargando modelo de reconocimiento de voz...")
         
         if not os.path.exists(self.modelo_path):
-            print(f"✗ Error: No se encontró el modelo en '{self.modelo_path}'")
+            print(f"[ERROR] No se encontro el modelo en '{self.modelo_path}'")
             print("\nPara descargar el modelo:")
             print("1. Visita: https://alphacephei.com/vosk/models")
             print("2. Descarga: vosk-model-small-es-0.42")
@@ -45,10 +90,11 @@ class VoiceToBraille:
             self.modelo = Model(self.modelo_path)
             self.recognizer = KaldiRecognizer(self.modelo, self.sample_rate)
             self.recognizer.SetWords(True)
-            print(f"✓ Modelo cargado exitosamente desde {self.modelo_path}")
+            print(f"[OK] Modelo cargado exitosamente")
+            print(f"[INFO] Sample rate configurado: {self.sample_rate} Hz")
             return True
         except Exception as e:
-            print(f"✗ Error al cargar modelo: {e}")
+            print(f"[ERROR] Error al cargar modelo: {e}")
             return False
     
     def audio_callback(self, indata, frames, time, status):
@@ -68,128 +114,133 @@ class VoiceToBraille:
             if device['max_input_channels'] > 0:
                 print(f"{i}: {device['name']}")
                 print(f"   Canales entrada: {device['max_input_channels']}")
-                print(f"   Sample rate: {device['default_samplerate']} Hz")
-                print()
-        print("="*60 + "\n")
-    
-    def escuchar_continuo(self, controlador_braille, device=None):
-        """
-        Modo de escucha continua - reconoce voz y envía a Braille en tiempo real
-        
-        Args:
-            controlador_braille: Instancia de MultiArduinoBrailleController
-            device: ID del dispositivo de audio (None para default)
-        """
-        if not self.recognizer:
-            print("✗ Error: Modelo no cargado")
-            return
-        
-        print("\n" + "="*60)
-        print("MODO ESCUCHA CONTINUA")
-        print("="*60)
-        print("🎤 Escuchando... Habla ahora")
-        print("Presiona Ctrl+C para detener")
-        print("="*60 + "\n")
-        
-        try:
-            with sd.RawInputStream(
-                samplerate=self.sample_rate,
-                blocksize=8000,
-                device=device,
-                dtype='int16',
-                channels=1,
-                callback=self.audio_callback
-            ):
-                self.escuchando = True
                 
-                while self.escuchando:
-                    data = self.audio_queue.get()
-                    
-                    if self.recognizer.AcceptWaveform(data):
-                        # Resultado completo (frase terminada)
-                        resultado = json.loads(self.recognizer.Result())
-                        texto = resultado.get('text', '')
-                        
-                        if texto:
-                            print(f"\n🗣️  Reconocido: '{texto}'")
-                            print("📝 Escribiendo en Braille (2s por carácter)...")
-                            controlador_braille.escribir_texto_paralelo(texto)
-                            print()
-                    else:
-                        # Resultado parcial (mientras habla)
-                        resultado_parcial = json.loads(self.recognizer.PartialResult())
-                        texto_parcial = resultado_parcial.get('partial', '')
-                        if texto_parcial:
-                            print(f"\r💬 {texto_parcial}", end='', flush=True)
-        
-        except KeyboardInterrupt:
-            print("\n\n✓ Escucha detenida")
-        except Exception as e:
-            print(f"\n✗ Error durante la escucha: {e}")
-        finally:
-            self.escuchando = False
-    
-    def escuchar_una_frase(self, controlador_braille, device=None, timeout=10):
-        """
-        Escucha una sola frase y la convierte a Braille
-        
-        Args:
-            controlador_braille: Instancia de MultiArduinoBrailleController
-            device: ID del dispositivo de audio
-            timeout: Tiempo máximo de espera en segundos
-            
-        Returns:
-            Texto reconocido o None
-        """
-        if not self.recognizer:
-            print("✗ Error: Modelo no cargado")
-            return None
-        
-        print("🎤 Escuchando... (habla ahora)")
-        
-        try:
-            with sd.RawInputStream(
-                samplerate=self.sample_rate,
-                blocksize=8000,
-                device=device,
-                dtype='int16',
-                channels=1,
-                callback=self.audio_callback
-            ):
-                inicio = sd.get_stream_time()
-                texto_final = None
-                
-                while (sd.get_stream_time() - inicio) < timeout:
+                # Probar tasas de muestreo comunes
+                compatible_rates = []
+                for rate in [8000, 16000, 22050, 32000, 44100, 48000]:
                     try:
-                        data = self.audio_queue.get(timeout=0.5)
-                    except queue.Empty:
-                        continue
-                    
-                    if self.recognizer.AcceptWaveform(data):
-                        resultado = json.loads(self.recognizer.Result())
-                        texto = resultado.get('text', '')
-                        
-                        if texto:
-                            texto_final = texto
-                            break
-                    else:
-                        resultado_parcial = json.loads(self.recognizer.PartialResult())
-                        texto_parcial = resultado_parcial.get('partial', '')
-                        if texto_parcial:
-                            print(f"\r💬 {texto_parcial}", end='', flush=True)
+                        sd.check_input_settings(device=i, channels=1, samplerate=rate)
+                        compatible_rates.append(rate)
+                    except:
+                        pass
                 
-                if texto_final:
-                    print(f"\n\n🗣️  Reconocido: '{texto_final}'")
-                    print("📝 Escribiendo en Braille (2s por carácter)...")
-                    controlador_braille.escribir_texto_paralelo(texto_final)
-                    return texto_final
-                else:
-                    print("\n⚠️  No se detectó voz clara")
-                    return None
+                    if compatible_rates:
+                        print(f"   Tasas compatibles: {', '.join(map(str, compatible_rates))} Hz")
+        
+        def escuchar_continuo(self, controlador_braille, device=None):
+            """
+            Escucha la voz y envía a Braille en tiempo real
+            
+            Args:
+                controlador_braille: Instancia de MultiArduinoBrailleController
+                device: ID del dispositivo de audio (None para default)
+            """
+            if not self.recognizer:
+                print("✗ Error: Modelo no cargado")
+                return
+            
+            print("\n" + "="*60)
+            print("MODO ESCUCHA CONTINUA")
+            print("="*60)
+            print("🎤 Escuchando... Habla ahora")
+            print("Presiona Ctrl+C para detener")
+            print("="*60 + "\n")
+            
+            try:
+                with sd.RawInputStream(
+                    samplerate=self.sample_rate,
+                    blocksize=8000,
+                    device=device,
+                    dtype='int16',
+                    channels=1,
+                    callback=self.audio_callback
+                ):
+                    while True:
+                        try:
+                            data = self.audio_queue.get(timeout=0.5)
+                        except queue.Empty:
+                            continue
+                        
+                        if self.recognizer.AcceptWaveform(data):
+                            resultado = json.loads(self.recognizer.Result())
+                            texto = resultado.get('text', '')
+                            if texto:
+                                print(f"\n[RECONOCIDO] '{texto}'")
+                                print("[INFO] Escribiendo en Braille (2s por caracter)...")
+                                controlador_braille.escribir_texto_paralelo(texto)
+                                print()
+                        else:
+                            # Resultado parcial (mientras habla)
+                            resultado_parcial = json.loads(self.recognizer.PartialResult())
+                            texto_parcial = resultado_parcial.get('partial', '')
+                            if texto_parcial:
+                                print(f"\r[PARCIAL] {texto_parcial}", end='', flush=True)
+            
+            except KeyboardInterrupt:
+                print("\n\n✓ Escucha detenida")
+            except Exception as e:
+                print(f"\n✗ Error durante la escucha: {e}")
+        
+        def escuchar_una_frase(self, controlador_braille, device=None, timeout=10):
+            """
+            Escucha una sola frase y la convierte a Braille
+            
+            Args:
+                controlador_braille: Instancia de MultiArduinoBrailleController
+                device: ID del dispositivo de audio
+                timeout: Tiempo máximo de espera en segundos
+                
+            Returns:
+                Texto reconocido o None
+            """
+            if not self.recognizer:
+                print("✗ Error: Modelo no cargado")
+                return None
+            
+            print("🎤 Escuchando... (habla ahora)")
+            
+            try:
+                with sd.RawInputStream(
+                    samplerate=self.sample_rate,
+                    blocksize=8000,
+                    device=device,
+                    dtype='int16',
+                    channels=1,
+                    callback=self.audio_callback
+                ):
+                    import time
+                    inicio = time.time()
+                    texto_final = None
                     
-        except Exception as e:
-            print(f"\n✗ Error durante la escucha: {e}")
-            return None
+                    while (time.time() - inicio) < timeout:
+                        try:
+                            data = self.audio_queue.get(timeout=0.5)
+                        except queue.Empty:
+                            continue
+                        
+                        if self.recognizer.AcceptWaveform(data):
+                            resultado = json.loads(self.recognizer.Result())
+                            texto_final = resultado.get('text', '')
+                            if texto_final:
+                                break
+                        else:
+                            resultado_parcial = json.loads(self.recognizer.PartialResult())
+                            texto_parcial = resultado_parcial.get('partial', '')
+                            if texto_parcial:
+                                print(f"\r💬 {texto_parcial}", end='', flush=True)
+                    
+                    if texto_final:
+                        print(f"\n\n🗣️  Reconocido: '{texto_final}'")
+                        print("📝 Escribiendo en Braille (2s por carácter)...")
+                        controlador_braille.escribir_texto_paralelo(texto_final)
+                        return texto_final
+                    else:
+                        print("\n⚠️  No se detectó voz clara")
+                        return None
+                        
+            except Exception as e:
+                print(f"\n✗ Error durante la escucha: {e}")
+                return None
     
     def test_microfono(self, device=None, duracion=5):
         """
@@ -200,10 +251,11 @@ class VoiceToBraille:
             duracion: Duración de la prueba en segundos
         """
         if not self.recognizer:
-            print("✗ Error: Modelo no cargado")
+            print("[ERROR] Modelo no cargado")
             return
         
-        print(f"\n🎤 Probando micrófono durante {duracion} segundos...")
+        print(f"\n[INFO] Probando microfono durante {duracion} segundos...")
+        print("[INFO] Sample rate: {} Hz".format(self.sample_rate))
         print("Habla algo para probar el reconocimiento\n")
         
         try:
@@ -228,17 +280,18 @@ class VoiceToBraille:
                         resultado = json.loads(self.recognizer.Result())
                         texto = resultado.get('text', '')
                         if texto:
-                            print(f"✓ Reconocido: '{texto}'")
+                            print(f"[OK] Reconocido: '{texto}'")
                     else:
                         resultado_parcial = json.loads(self.recognizer.PartialResult())
                         texto_parcial = resultado_parcial.get('partial', '')
                         if texto_parcial:
-                            print(f"\r💬 {texto_parcial}", end='', flush=True)
+                            print(f"\r[PARCIAL] {texto_parcial}", end='', flush=True)
                 
-                print("\n\n✓ Test completado")
+                print("\n\n[OK] Test completado")
                 
         except Exception as e:
-            print(f"\n✗ Error durante el test: {e}")
+            print(f"\n[ERROR] Error durante el test: {e}")
+            print(f"[INFO] Verifica el sample rate del dispositivo con opcion 4")
 
 
 def menu_principal():
@@ -259,14 +312,14 @@ def menu_principal():
     print("\n1. Conectando con Arduinos...")
     controlador = MultiArduinoBrailleController(puertos=puertos)
     if not controlador.conectar_todos():
-        print("\n⚠️  No todos los Arduinos conectaron")
+        print("\n[WARNING] No todos los Arduinos conectaron")
         continuar = input("¿Continuar de todos modos? (s/n): ").strip().lower()
         if continuar != 's':
             return
     
     # Verificar estados
     if not controlador.verificar_estados():
-        print("⚠️  Algunos Arduinos no responden correctamente")
+        print("[WARNING] Algunos Arduinos no responden correctamente")
     
     # Configurar sistema de voz
     print("\n2. Inicializando reconocimiento de voz...")
@@ -279,7 +332,7 @@ def menu_principal():
         controlador.desconectar()
         return
     
-    print("\n✓ Sistema inicializado correctamente\n")
+    print("\n[OK] Sistema inicializado correctamente\n")
     
     # Menú de opciones
     while True:
@@ -295,7 +348,7 @@ def menu_principal():
         print("7. Información del sistema")
         print("8. Salir")
         print("="*60)
-        print("ℹ️  Limitación energética: 2 segundos por carácter")
+        print("[INFO] Limitación energética: 2 segundos por carácter")
         print("="*60)
         
         opcion = input("\nSelecciona una opción: ").strip()
@@ -329,18 +382,16 @@ def menu_principal():
             
         elif opcion == "7":
             info = controlador.get_info()
-            print("\n📊 Información del sistema:")
+            print("\n[INFO] Información del sistema:")
             for key, value in info.items():
-                print(f"   • {key}: {value}")
-            
+                print(f"   - {key}: {value}")
+        
         elif opcion == "8":
-            print("\n✓ Saliendo del sistema...")
+            print("\n[OK] Saliendo del sistema...")
             break
             
         else:
-            print("✗ Opción inválida")
-    
-    # Limpiar y desconectar
+            print("[ERROR] Opción inválida")
     controlador.resetear_todos()
     controlador.desconectar_todos()
 
@@ -350,9 +401,9 @@ def main():
     try:
         menu_principal()
     except KeyboardInterrupt:
-        print("\n\n✓ Programa interrumpido por el usuario")
+        print("\n\n[OK] Programa interrumpido por el usuario")
     except Exception as e:
-        print(f"\n✗ Error inesperado: {e}")
+        print(f"\n[ERROR] Error inesperado: {e}")
         import traceback
         traceback.print_exc()
 
@@ -363,7 +414,7 @@ if __name__ == "__main__":
         import vosk
         import sounddevice
     except ImportError as e:
-        print("✗ Error: Faltan dependencias")
+        print("[ERROR] Faltan dependencias")
         print("\nInstala las dependencias necesarias:")
         print("  pip3 install vosk sounddevice")
         print("\nEn Raspberry Pi también necesitas:")
@@ -371,3 +422,4 @@ if __name__ == "__main__":
         sys.exit(1)
     
     main()
+
